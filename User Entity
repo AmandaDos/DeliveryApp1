@@ -1,0 +1,92 @@
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  OneToOne,
+  BeforeInsert,
+} from 'typeorm';
+import { Exclude } from 'class-transformer';
+import * as bcrypt from 'bcrypt';
+import { Courier } from './courier.entity';
+
+export enum UserRole {
+  COURIER = 'courier',
+  ADMIN = 'admin',
+}
+
+export enum UserStatus {
+  ACTIVE = 'active',
+  INACTIVE = 'inactive',
+  SUSPENDED = 'suspended',
+}
+
+@Entity('users')
+export class User {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ type: 'enum', enum: UserRole, default: UserRole.COURIER })
+  role: UserRole;
+
+  @Column({ length: 100 })
+  name: string;
+
+  @Column({ length: 20, unique: true })
+  phone: string;
+
+  @Column({ unique: true })
+  email: string;
+
+  @Column()
+  @Exclude({ toPlainOnly: true })
+  password_hash: string;
+
+  @Column({ type: 'enum', enum: UserStatus, default: UserStatus.ACTIVE })
+  status: UserStatus;
+
+  @Column({ nullable: true })
+  last_login_at: Date;
+
+  @Column({ nullable: true })
+  email_verified_at: Date;
+
+  @Column({ nullable: true })
+  phone_verified_at: Date;
+
+  @CreateDateColumn()
+  created_at: Date;
+
+  @UpdateDateColumn()
+  updated_at: Date;
+
+  // Relations
+  @OneToOne(() => Courier, courier => courier.user)
+  courier: Courier;
+
+  // Methods
+  @BeforeInsert()
+  async hashPassword() {
+    if (this.password_hash) {
+      this.password_hash = await bcrypt.hash(this.password_hash, 12);
+    }
+  }
+
+  async validatePassword(plainPassword: string): Promise<boolean> {
+    return bcrypt.compare(plainPassword, this.password_hash);
+  }
+
+  // Virtual properties
+  get isActive(): boolean {
+    return this.status === UserStatus.ACTIVE;
+  }
+
+  get isCourier(): boolean {
+    return this.role === UserRole.COURIER;
+  }
+
+  get isAdmin(): boolean {
+    return this.role === UserRole.ADMIN;
+  }
+}
