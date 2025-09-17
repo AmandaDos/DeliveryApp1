@@ -1,0 +1,293 @@
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  ManyToOne,
+  OneToOne,
+  JoinColumn,
+  Index,
+} from 'typeorm';
+import { Point } from 'geojson';
+import { Route } from './route.entity';
+import { Order } from './order.entity';
+
+export enum StopType {
+  PICKUP = 'pickup',
+  DROPOFF = 'dropoff',
+}
+
+export enum StopStatus {
+  PENDING = 'pending',
+  EN_ROUTE = 'en_route',
+  ARRIVED = 'arrived',
+  COMPLETED = 'completed',
+  FAILED = 'failed',
+  SKIPPED = 'skipped',
+}
+
+@Entity('route_stops')
+@Index(['route_id', 'sequence'])
+export class RouteStop {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column('uuid')
+  route_id: string;
+
+  @Column('uuid')
+  order_id: string;
+
+  @Column({ type: 'enum', enum: StopType })
+  type: StopType;
+
+  @Column({ type: 'smallint' })
+  sequence: number;
+
+  @Column({ type: 'enum', enum: StopStatus, default: StopStatus.PENDING })
+  status: StopStatus;
+
+  @Column({ type: 'text' })
+  address: string;
+
+  @Column({
+    type: 'geometry',
+    spatialFeatureType: 'Point',
+    srid: 4326,
+  })
+  location: Point;
+
+  @Column({ nullable: true })
+  eta: Date;
+
+  @Column({ nullable: true })
+  planned_arrival_time: Date;
+
+  @Column({ nullable: true })
+  actual_arrival_time: Date;
+
+  @Column({ nullable: true })
+  completed_at: Date;
+
+  @Column({ default: 0 })
+  estimated_duration_minutes: number;
+
+  @Column({ nullable: true })
+  actual_duration_minutes: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 6, nullable: true })
+  distance_from_previous_km: number;
+
+  @Column({ nullable: true })
+  travel_time_from_previous_minutes: number;
+
+  @Column({ type: 'jsonb', nullable: true })
+  stop_metadata: {
+    special_instructions?: string;
+    access_code?: string;
+    contact_phone?: string;
+    delivery_photo_required?: boolean;
+    signature_required?: boolean;
+    id_verification_required?: boolean;
+    attempted_deliveries?: number;
+    delivery_notes?: string;
+    failure_reason?: string;
+  };
+
+  @Column({ type: 'jsonb', nullable: true })
+  completion_proof: {
+    photos?: string[];
+    signature?: string;
+    recipient_name?: string;
+    delivery_time?: string;
+    notes?: string;
+    location_verified?: boolean;
+  };
+
+  @Column({ length: 500, nullable: true })
+  failure_reason: string;
+
+  @Column({ nullable: true })
+  attempted_at: Date;
+
+  @Column({ default: 0 })
+  attempt_count: number;
+
+  @CreateDateColumn()
+  created_at: Date;
+
+  @UpdateDateColumn()
+  updated_at: Date;
+
+  // Relations
+  @ManyToOne(() => Route, route => route.stops)
+  @JoinColumn({ name: 'route_id' })
+  route: Route;
+
+  @OneToOne(() => Order, { eager: true })
+  @JoinColumn({ name: 'order_id' })
+  order: Order;
+
+  // For easier access to pickup/dropoff relationships
+  @OneToOne(() => Order, order => order.pickup_stop)
+  pickup_order: Order;
+
+  @OneToOne(() => Order, order => order.dropoff_stop)
+  dropoff_order: Order;
+
+  // Virtual properties
+  get isPickup(): boolean {
+    return this.type === StopType.PICKUP;
+  }
+
+  get isDropoff(): boolean {
+    return this.type === StopType.DROPOFF;
+  }
+
+  get isPending(): boolean {
+    return this.status === StopStatus.PENDING;
+  }
+
+  get isCompleted(): boolean {
+    return this.status === StopStatus.COMPLETED;
+  }
+
+  get isFailed(): boolean {
+    return this.status === StopStatus.FAILED;
+  }
+
+  get isLate(): boolean {
+    if (!this.planned_arrival_time || !this.actual_arrival_time) return false;
+    return this.actual_arrival_time > this.planned_arrival_time;
+  }
+
+  get delayMinutes(): number {
+    if (!this.isLate) return 0;
+    return Math.floor(
+      (this.actual_arrival_time!.getTime() - this.planned_arrival_time!.getTime()) / 60000
+    );
+  }
+
+  get isOverdue(): boolean {
+    if (!this.eta || this.isCompleted) return false;
+    return new Date() > this.eta;
+  }
+
+  get timeUntilEta(): number {
+    if (!this.eta) return 0;
+    const now = new Date().getTime();
+    const etaTime = this.eta.getTime();
+    return Math.max(0, etaTime - now);
+  }
+
+  get displayAddress(): string {
+    // Extract main part of address for display
+    return this.address.split(',')[0] || this.address;
+  }
+
+  // Methods
+  markEnRoute(): void {
+    if (this.status !== StopStatus.PENDING) {
+      throw new Error('Stop must be PENDING to mark as en route');
+    }
+    this.status = StopStatus.EN_ROUTE;
+    this.updated_at = new Date();
+  }
+
+  markArrived(): void {
+    if (![StopStatus.PENDING, StopStatus.EN_ROUTE].includes(this.status)) {
+      throw new Error('Stop must be PENDING or EN_ROUTE to mark as arrived');
+    }
+    this.status = StopStatus.ARRIVED;
+    this.actual_arrival_time = new Date();
+    this.updated_at = new Date();
+  }
+
+  complete(proof?: RouteStop['completion_proof']): void {
+    if (this.status === StopStatus.COMPLETED) {
+      throw new Error('Stop is already completed');
+    }
+    
+    this.status = StopStatus.COMPLETED;
+    this.completed_at = new Date();
+    
+    if (proof) {
+      this.completion_proof = proof;
+    }
+
+    // Calculate actual duration
+    if (this.actual_arrival_time) {
+      this.actual_duration_minutes = Math.floor(
+        (this.completed_at.getTime() - this.actual_arrival_time.getTime()) / 60000
+      );
+    }
+
+    this.updated_at = new Date();
+  }
+
+  fail(reason: string): void {
+    this.status = StopStatus.FAILED;
+    this.failure_reason = reason;
+    this.attempted_at = new Date();
+    this.attempt_count += 1;
+    this.updated_at = new Date();
+  }
+
+  skip(reason: string): void {
+    this.status = StopStatus.SKIPPED;
+    this.failure_reason = reason;
+    this.updated_at = new Date();
+  }
+
+  retry(): void {
+    if (this.status !== StopStatus.FAILED) {
+      throw new Error('Only failed stops can be retried');
+    }
+    this.status = StopStatus.PENDING;
+    this.failure_reason = null;
+    this.updated_at = new Date();
+  }
+
+  updateEta(newEta: Date): void {
+    this.eta = newEta;
+    this.updated_at = new Date();
+  }
+
+  addAttempt(): void {
+    this.attempt_count += 1;
+    this.attempted_at = new Date();
+  }
+
+  canComplete(): boolean {
+    return [StopStatus.ARRIVED, StopStatus.FAILED].includes(this.status);
+  }
+
+  requiresProof(): boolean {
+    return this.stop_metadata?.delivery_photo_required || 
+           this.stop_metadata?.signature_required || 
+           this.stop_metadata?.id_verification_required || 
+           false;
+  }
+
+  hasValidProof(): boolean {
+    if (!this.requiresProof()) return true;
+    if (!this.completion_proof) return false;
+
+    const proof = this.completion_proof;
+    
+    if (this.stop_metadata?.delivery_photo_required && !proof.photos?.length) {
+      return false;
+    }
+    
+    if (this.stop_metadata?.signature_required && !proof.signature) {
+      return false;
+    }
+    
+    if (this.stop_metadata?.id_verification_required && !proof.recipient_name) {
+      return false;
+    }
+
+    return true;
+  }
+}
