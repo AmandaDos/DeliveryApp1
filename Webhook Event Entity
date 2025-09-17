@@ -1,0 +1,188 @@
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  Index,
+} from 'typeorm';
+
+export enum WebhookProvider {
+  WHATSAPP = 'whatsapp',
+  GOOGLE_MAPS = 'google_maps',
+  PAYMENT = 'payment',
+  SMS = 'sms',
+}
+
+export enum WebhookEventStatus {
+  RECEIVED = 'received',
+  PROCESSING = 'processing',
+  PROCESSED = 'processed',
+  FAILED = 'failed',
+  IGNORED = 'ignored',
+}
+
+@Entity('webhook_events')
+@Index(['provider', 'event_type'])
+@Index(['status', 'created_at'])
+export class WebhookEvent {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ type: 'enum', enum: WebhookProvider })
+  provider: WebhookProvider;
+
+  @Column({ length: 100 })
+  event_type: string;
+
+  @Column({ length: 200, nullable: true })
+  event_id: string;
+
+  @Column({ type: 'jsonb' })
+  payload: any;
+
+  @Column({ type: 'text', nullable: true })
+  raw_body: string;
+
+  @Column({ type: 'jsonb', nullable: true })
+  headers: Record<string, string>;
+
+  @Column({ length: 500, nullable: true })
+  signature: string;
+
+  @Column({ default: false })
+  signature_valid: boolean;
+
+  @Column({ type: 'enum', enum: WebhookEventStatus, default: WebhookEventStatus.RECEIVED })
+  status: WebhookEventStatus;
+
+  @Column({ type: 'text', nullable: true })
+  processing_error: string;
+
+  @Column({ type: 'jsonb', nullable: true })
+  processing_result: {
+    order_id?: string;
+    message_sent?: boolean;
+    actions_taken?: string[];
+    warnings?: string[];
+  };
+
+  @Column({ default: 0 })
+  processing_attempts: number;
+
+  @Column({ nullable: true })
+  processed_at: Date;
+
+  @Column({ nullable: true })
+  next_retry_at: Date;
+
+  @CreateDateColumn()
+  created_at: Date;
+
+  @UpdateDateColumn()
+  updated_at: Date;
+
+  // Virtual properties
+  get isProcessed(): boolean {
+    return this.status === WebhookEventStatus.PROCESSED;
+  }
+
+  get isFailed(): boolean {
+    return this.status === WebhookEventStatus.FAILED;
+  }
+
+  get canRetry(): boolean {
+    return this.status === WebhookEventStatus.FAILED && 
+           this.processing_attempts < 5;
+  }
+
+  get processingTimeMs(): number | null {
+    if (!this.processed_at) return null;
+    return this.processed_at.getTime() - this.created_at.getTime();
+  }
+
+  // Methods
+  markProcessing(): void {
+    this.status = WebhookEventStatus.PROCESSING;
+    this.processing_attempts += 1;
+    this.updated_at = new Date();
+  }
+
+  markProcessed(result?: WebhookEvent['processing_result']): void {
+    this.status = WebhookEventStatus.PROCESSED;
+    this.processed_at = new Date();
+    
+    if (result) {
+      this.processing_result = result;
+    }
+    
+    this.updated_at = new Date();
+  }
+
+  markFailed(error: string, nextRetryAt?: Date): void {
+    this.status = WebhookEventStatus.FAILED;
+    this.processing_error = error;
+    this.next_retry_at = nextRetryAt;
+    this.updated_at = new Date();
+  }
+
+  markIgnored(reason: string): void {
+    this.status = WebhookEventStatus.IGNORED;
+    this.processing_error = reason;
+    this.updated_at = new Date();
+  }
+
+  scheduleRetry(delayMinutes: number = 5): void {
+    const nextRetry = new Date();
+    nextRetry.setMinutes(nextRetry.getMinutes() + delayMinutes);
+    this.next_retry_at = nextRetry;
+    this.status = WebhookEventStatus.FAILED;
+    this.updated_at = new Date();
+  }
+
+  // Static methods for creating events
+  static createWhatsAppEvent(
+    eventType: string,
+    payload: any,
+    rawBody: string,
+    headers: Record<string, string>,
+    signature?: string
+  ): Partial<WebhookEvent> {
+    return {
+      provider: WebhookProvider.WHATSAPP,
+      event_type: eventType,
+      event_id: payload.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.id,
+      payload,
+      raw_body: rawBody,
+      headers,
+      signature,
+      signature_valid: false, // Will be validated separately
+    };
+  }
+
+  // Helper methods for WhatsApp events
+  get whatsAppMessage(): any {
+    if (this.provider !== WebhookProvider.WHATSAPP) return null;
+    return this.payload?.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+  }
+
+  get whatsAppContact(): any {
+    if (this.provider !== WebhookProvider.WHATSAPP) return null;
+    return this.payload?.entry?.[0]?.changes?.[0]?.value?.contacts?.[0];
+  }
+
+  get isWhatsAppTextMessage(): boolean {
+    const message = this.whatsAppMessage;
+    return message?.type === 'text';
+  }
+
+  get whatsAppMessageText(): string | null {
+    const message = this.whatsAppMessage;
+    return message?.text?.body || null;
+  }
+
+  get whatsAppPhoneNumber(): string | null {
+    const message = this.whatsAppMessage;
+    return message?.from || null;
+  }
+}
