@@ -1,0 +1,89 @@
+import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { BullModule } from '@nestjs/bull';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { ScheduleModule } from '@nestjs/schedule';
+
+import { AuthModule } from './modules/auth/auth.module';
+import { OrdersModule } from './modules/orders/orders.module';
+import { CouriersModule } from './modules/couriers/couriers.module';
+import { AssignmentsModule } from './modules/assignments/assignments.module';
+import { RoutesModule } from './modules/routes/routes.module';
+import { WhatsappModule } from './modules/whatsapp/whatsapp.module';
+import { RealtimeModule } from './modules/realtime/realtime.module';
+import { OptimizerModule } from './modules/optimizer/optimizer.module';
+import { GeocodingModule } from './modules/geocoding/geocoding.module';
+import { HealthModule } from './modules/health/health.module';
+import { MetricsModule } from './modules/metrics/metrics.module';
+
+import { User } from './entities/user.entity';
+import { Courier } from './entities/courier.entity';
+import { Order } from './entities/order.entity';
+import { Assignment } from './entities/assignment.entity';
+import { Route } from './entities/route.entity';
+import { RouteStop } from './entities/route-stop.entity';
+import { WebhookEvent } from './entities/webhook-event.entity';
+
+@Module({
+  imports: [
+    // Configuration
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: ['.env.local', '.env'],
+    }),
+
+    // Database
+    TypeOrmModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: (configService: ConfigService) => ({
+        type: 'postgres',
+        url: configService.get('DATABASE_URL'),
+        entities: [User, Courier, Order, Assignment, Route, RouteStop, WebhookEvent],
+        synchronize: configService.get('NODE_ENV') === 'development',
+        logging: configService.get('NODE_ENV') === 'development',
+        ssl: configService.get('NODE_ENV') === 'production' ? { rejectUnauthorized: false } : false,
+      }),
+      inject: [ConfigService],
+    }),
+
+    // Redis/Bull Queue
+    BullModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: (configService: ConfigService) => ({
+        redis: {
+          host: new URL(configService.get('REDIS_URL')).hostname,
+          port: parseInt(new URL(configService.get('REDIS_URL')).port),
+        },
+      }),
+      inject: [ConfigService],
+    }),
+
+    // Rate Limiting
+    ThrottlerModule.forRootAsync({
+      imports: [ConfigModule],
+      useFactory: (configService: ConfigService) => ({
+        ttl: configService.get('RATE_LIMIT_WINDOW_MS', 900000),
+        limit: configService.get('RATE_LIMIT_MAX_REQUESTS', 100),
+      }),
+      inject: [ConfigService],
+    }),
+
+    // Task Scheduling
+    ScheduleModule.forRoot(),
+
+    // Feature Modules
+    AuthModule,
+    OrdersModule,
+    CouriersModule,
+    AssignmentsModule,
+    RoutesModule,
+    WhatsappModule,
+    RealtimeModule,
+    OptimizerModule,
+    GeocodingModule,
+    HealthModule,
+    MetricsModule,
+  ],
+})
+export class AppModule {}
