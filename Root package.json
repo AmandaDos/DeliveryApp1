@@ -1,0 +1,71 @@
+{
+  "name": "route-consolidator",
+  "version": "1.0.0",
+  "description": "MVP app for route consolidation and delivery optimization",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"pnpm dev:api\" \"pnpm dev:admin\" \"pnpm dev:mobile\"",
+    "dev:api": "pnpm --filter=@route/api dev",
+    "dev:mobile": "pnpm --filter=@route/mobile dev",
+    "dev:admin": "pnpm --filter=@route/admin dev",
+    "build": "pnpm --filter=@route/* build",
+    "build:api": "pnpm --filter=@route/api build",
+    "build:mobile": "pnpm --filter=@route/mobile build",
+    "build:admin": "pnpm --filter=@route/admin build",
+    "test": "pnpm --filter=@route/* test",
+    "test:api": "pnpm --filter=@route/api test",
+    "test:mobile": "pnpm --filter=@route/mobile test",
+    "test:e2e": "pnpm --filter=@route/api test:e2e",
+    "test:coverage": "pnpm --filter=@route/api test:cov",
+    "lint": "pnpm --filter=@route/* lint",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "db:migrate": "pnpm --filter=@route/api db:migrate",
+    "db:rollback": "pnpm --filter=@route/api db:rollback",
+    "db:reset": "pnpm --filter=@route/api db:reset",
+    "seed": "pnpm --filter=@route/api seed",
+    "seed:fresh": "pnpm db:reset && pnpm seed",
+    "docker:up": "docker-compose up -d",
+    "docker:down": "docker-compose down",
+    "docker:logs": "docker-compose logs -f",
+    "setup": "pnpm install && pnpm docker:up && sleep 10 && pnpm db:migrate && pnpm seed"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@typescript-eslint/eslint-plugin": "^6.13.1",
+    "@typescript-eslint/parser": "^6.13.1",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.54.0",
+    "eslint-config-prettier": "^9.0.0",
+    "prettier": "^3.1.0",
+    "typescript": "^5.3.2"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=8.0.0"
+  },
+  "packageManager": "pnpm@8.12.1",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/route-consolidator"
+  },
+  "keywords": [
+    "delivery",
+    "route-optimization",
+    "logistics",
+    "mobile-app",
+    "whatsapp-bot",
+    "nestjs",
+    "react-native",
+    "expo"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "Route Consolidator Team",
+    "email": "dev@route-consolidator.com"
+  }
+}
