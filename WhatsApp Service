@@ -1,0 +1,339 @@
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { HttpService } from '@nestjs/axios';
+import { InjectQueue } from '@nestjs/bull';
+import { Queue } from 'bull';
+import * as crypto from 'crypto';
+
+import { WebhookEvent, WebhookProvider } from '../../entities/webhook-event.entity';
+import { OrdersService } from '../orders/orders.service';
+import { GeocodingService } from '../geocoding/geocoding.service';
+
+interface WhatsAppMessage {
+  id: string;
+  from: string;
+  text: {
+    body: string;
+  };
+  timestamp: string;
+  type: 'text' | 'image' | 'document' | 'audio' | 'video';
+}
+
+interface OrderData {
+  pickup_address: string;
+  dropoff_address: string;
+  pickup_window?: string;
+  fee?: number;
+  notes?: string;
+}
+
+@Injectable()
+export class WhatsappService {
+  private readonly logger = new Logger(WhatsappService.name);
+  private readonly whatsappApiUrl = 'https://graph.facebook.com/v18.0';
+  
+  constructor(
+    @InjectRepository(WebhookEvent)
+    private readonly webhookEventRepository: Repository<WebhookEvent>,
+    private readonly httpService: HttpService,
+    private readonly configService: ConfigService,
+    private readonly ordersService: OrdersService,
+    private readonly geocodingService: GeocodingService,
+    @InjectQueue('whatsapp-messages')
+    private readonly messageQueue: Queue,
+  ) {}
+
+  async handleWebhook(body: any, signature: string, rawBody: string): Promise<void> {
+    // Verify webhook signature
+    const isValid = this.verifyWebhookSignature(rawBody, signature);
+    
+    // Create webhook event record
+    const webhookEvent = this.webhookEventRepository.create(
+      WebhookEvent.createWhatsAppEvent(
+        'message_received',
+        body,
+        rawBody,
+        {},
+        signature,
+      )
+    );
+    webhookEvent.signature_valid = isValid;
+    
+    await this.webhookEventRepository.save(webhookEvent);
+
+    if (!isValid) {
+      this.logger.warn('Invalid webhook signature received');
+      return;
+    }
+
+    // Process messages
+    const entry = body.entry?.[0];
+    const changes = entry?.changes?.[0];
+    const value = changes?.value;
+    const messages = value?.messages;
+
+    if (messages && messages.length > 0) {
+      for (const message of messages) {
+        await this.messageQueue.add('process-message', {
+          message,
+          contact: value.contacts?.[0],
+          webhookEventId: webhookEvent.id,
+        });
+      }
+    }
+  }
+
+  async processMessage(
+    message: WhatsAppMessage,
+    contact: any,
+    webhookEventId: string,
+  ): Promise<void> {
+    try {
+      if (message.type !== 'text') {
+        await this.sendMessage(
+          message.from,
+          'Lo siento, solo puedo procesar mensajes de texto por ahora. 📝'
+        );
+        return;
+      }
+
+      const messageText = message.text.body.trim();
+      
+      // Check if it's a structured order message
+      const orderData = this.parseStructuredMessage(messageText);
+      
+      if (orderData) {
+        await this.handleStructuredOrder(message.from, orderData, contact);
+      } else {
+        // Start guided conversation
+        await this.handleGuidedConversation(message.from, messageText, contact);
+      }
+
+      // Mark webhook event as processed
+      await this.webhookEventRepository.update(webhookEventId, {
+        status: 'processed',
+        processed_at: new Date(),
+      });
+
+    } catch (error) {
+      this.logger.error('Error processing WhatsApp message:', error);
+      
+      await this.webhookEventRepository.update(webhookEventId, {
+        status: 'failed',
+        processing_error: error.message,
+      });
+
+      await this.sendMessage(
+        message.from,
+        'Disculpa, hubo un error procesando tu mensaje. Por favor intenta nuevamente. ❌'
+      );
+    }
+  }
+
+  private parseStructuredMessage(text: string): OrderData | null {
+    try {
+      const patterns = {
+        pickup: /pickup:\s*([^;]+)/i,
+        dropoff: /dropoff:\s*([^;]+)/i,
+        ventana: /ventana:\s*([^;]+)/i,
+        fee: /fee:\s*(\d+)/i,
+        nota: /nota?:\s*([^;]+)/i,
+      };
+
+      const matches: Partial<OrderData> = {};
+      
+      const pickupMatch = text.match(patterns.pickup);
+      const dropoffMatch = text.match(patterns.dropoff);
+      
+      if (!pickupMatch || !dropoffMatch) {
+        return null; // Must have at least pickup and dropoff
+      }
+
+      matches.pickup_address = pickupMatch[1].trim();
+      matches.dropoff_address = dropoffMatch[1].trim();
+
+      const ventanaMatch = text.match(patterns.ventana);
+      if (ventanaMatch) {
+        matches.pickup_window = ventanaMatch[1].trim();
+      }
+
+      const feeMatch = text.match(patterns.fee);
+      if (feeMatch) {
+        matches.fee = parseInt(feeMatch[1]);
+      }
+
+      const notaMatch = text.match(patterns.nota);
+      if (notaMatch) {
+        matches.notes = notaMatch[1].trim();
+      }
+
+      return matches as OrderData;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  private async handleStructuredOrder(
+    phoneNumber: string,
+    orderData: OrderData,
+    contact: any,
+  ): Promise<void> {
+    try {
+      // Geocode addresses
+      const pickupCoords = await this.geocodingService.geocodeAddress(
+        orderData.pickup_address,
+        'Mérida, Yucatán, México'
+      );
+      
+      const dropoffCoords = await this.geocodingService.geocodeAddress(
+        orderData.dropoff_address,
+        'Mérida, Yucatán, México'
+      );
+
+      if (!pickupCoords || !dropoffCoords) {
+        await this.sendMessage(
+          phoneNumber,
+          '❌ No pude encontrar una o ambas direcciones. Por favor verifica:\n\n' +
+          `📍 Recogida: ${orderData.pickup_address}\n` +
+          `📍 Entrega: ${orderData.dropoff_address}\n\n` +
+          'Intenta con direcciones más específicas.'
+        );
+        return;
+      }
+
+      // Create order
+      const order = await this.ordersService.createFromWhatsApp({
+        pickup_address: orderData.pickup_address,
+        pickup_location: {
+          type: 'Point',
+          coordinates: [pickupCoords.lng, pickupCoords.lat],
+        },
+        dropoff_address: orderData.dropoff_address,
+        dropoff_location: {
+          type: 'Point',
+          coordinates: [dropoffCoords.lng, dropoffCoords.lat],
+        },
+        fee: orderData.fee || 50, // Default fee
+        notes: orderData.notes,
+        customer_phone: phoneNumber,
+        customer_name: contact?.profile?.name || 'Cliente WhatsApp',
+        pickup_window: orderData.pickup_window,
+      });
+
+      // Send confirmation
+      await this.sendMessage(
+        phoneNumber,
+        `✅ ¡Pedido creado exitosamente!\n\n` +
+        `📋 ID: ${order.displayNumber}\n` +
+        `📍 Recogida: ${order.pickup_address}\n` +
+        `📍 Entrega: ${order.dropoff_address}\n` +
+        `💰 Tarifa: $${order.fee}\n` +
+        `⏰ Ventana: ${orderData.pickup_window || 'Flexible'}\n` +
+        `📝 Notas: ${order.notes || 'Ninguna'}\n\n` +
+        `🚚 Tu pedido está siendo asignado a un repartidor cercano.`
+      );
+
+    } catch (error) {
+      this.logger.error('Error creating structured order:', error);
+      await this.sendMessage(
+        phoneNumber,
+        '❌ Hubo un error creando tu pedido. Por favor intenta nuevamente.'
+      );
+    }
+  }
+
+  private async handleGuidedConversation(
+    phoneNumber: string,
+    messageText: string,
+    contact: any,
+  ): Promise<void> {
+    // Simple guided conversation - in production, you'd use a state machine
+    // For MVP, just provide instructions
+    
+    if (messageText.toLowerCase().includes('hola') || messageText.toLowerCase().includes('pedido')) {
+      await this.sendMessage(
+        phoneNumber,
+        `¡Hola ${contact?.profile?.name || 'cliente'}! 👋\n\n` +
+        `Te ayudo a crear un pedido. Puedes enviarlo de dos formas:\n\n` +
+        `📝 **Formato rápido:**\n` +
+        `Pickup: [dirección recogida]; Dropoff: [dirección entrega]; Ventana: [hora]; Fee: [precio]; Nota: [comentarios]\n\n` +
+        `📝 **Ejemplo:**\n` +
+        `Pickup: Calle 60 #123, Centro; Dropoff: Calle 20 #200, Itzimná; Ventana: 16:00-17:00; Fee: 80; Nota: frágil\n\n` +
+        `O responde "ayuda" para crear el pedido paso a paso. 🤝`
+      );
+    } else if (messageText.toLowerCase().includes('ayuda')) {
+      await this.sendMessage(
+        phoneNumber,
+        `📋 **Creación guiada de pedido**\n\n` +
+        `Por favor envía la **dirección de recogida** completa.\n\n` +
+        `Ejemplo: "Calle 60 #123, Centro, Mérida"\n\n` +
+        `Incluye referencias para mayor precisión. 📍`
+      );
+    } else {
+      // Try to interpret as address or provide help
+      await this.sendMessage(
+        phoneNumber,
+        `No entiendo tu mensaje. 🤔\n\n` +
+        `Para crear un pedido usa el formato:\n` +
+        `Pickup: [origen]; Dropoff: [destino]; Fee: [precio]\n\n` +
+        `O escribe "ayuda" para asistencia paso a paso.`
+      );
+    }
+  }
+
+  async sendMessage(phoneNumber: string, message: string): Promise<void> {
+    try {
+      const token = this.configService.get('WHATSAPP_TOKEN');
+      const phoneNumberId = this.configService.get('PHONE_NUMBER_ID');
+      
+      const response = await this.httpService.post(
+        `${this.whatsappApiUrl}/${phoneNumberId}/messages`,
+        {
+          messaging_product: 'whatsapp',
+          to: phoneNumber,
+          text: { body: message },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      ).toPromise();
+
+      this.logger.debug(`Message sent to ${phoneNumber}: ${response?.data?.messages?.[0]?.id}`);
+    } catch (error) {
+      this.logger.error('Error sending WhatsApp message:', error.response?.data || error.message);
+      throw error;
+    }
+  }
+
+  private verifyWebhookSignature(body: string, signature: string): boolean {
+    try {
+      const appSecret = this.configService.get('WHATSAPP_VERIFY_TOKEN');
+      const expectedSignature = crypto
+        .createHmac('sha256', appSecret)
+        .update(body, 'utf8')
+        .digest('hex');
+      
+      return signature === `sha256=${expectedSignature}`;
+    } catch (error) {
+      this.logger.error('Error verifying webhook signature:', error);
+      return false;
+    }
+  }
+
+  verifyWebhook(mode: string, token: string, challenge: string): string | null {
+    const verifyToken = this.configService.get('WHATSAPP_VERIFY_TOKEN');
+    
+    if (mode === 'subscribe' && token === verifyToken) {
+      this.logger.log('WhatsApp webhook verified successfully');
+      return challenge;
+    }
+    
+    this.logger.warn('WhatsApp webhook verification failed');
+    return null;
+  }
+}
