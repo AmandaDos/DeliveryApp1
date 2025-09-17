@@ -1,0 +1,206 @@
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  ManyToOne,
+  JoinColumn,
+  Index,
+} from 'typeorm';
+import { Order } from './order.entity';
+import { Courier } from './courier.entity';
+
+export enum AssignmentStatus {
+  PROPOSED = 'proposed',
+  ACCEPTED = 'accepted',
+  DECLINED = 'declined',
+  ACTIVE = 'active',
+  COMPLETED = 'completed',
+  CANCELLED = 'cancelled',
+  EXPIRED = 'expired',
+}
+
+export enum AssignmentSource {
+  AUTO = 'auto',
+  MANUAL = 'manual',
+  COURIER_REQUEST = 'courier_request',
+}
+
+@Entity('assignments')
+@Index(['order_id', 'courier_id'], { unique: true })
+export class Assignment {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column('uuid')
+  order_id: string;
+
+  @Column('uuid')
+  courier_id: string;
+
+  @Column({ type: 'enum', enum: AssignmentStatus, default: AssignmentStatus.PROPOSED })
+  status: AssignmentStatus;
+
+  @Column({ type: 'enum', enum: AssignmentSource, default: AssignmentSource.AUTO })
+  proposed_by: AssignmentSource;
+
+  @Column({ type: 'decimal', precision: 5, scale: 3, nullable: true })
+  score: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 6, nullable: true })
+  distance_to_pickup_km: number;
+
+  @Column({ nullable: true })
+  estimated_pickup_duration_minutes: number;
+
+  @Column({ nullable: true })
+  estimated_total_duration_minutes: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  route_efficiency_improvement: number;
+
+  @Column({ type: 'jsonb', nullable: true })
+  assignment_metadata: {
+    auto_assignment_reason?: string;
+    courier_capacity_usage?: number;
+    route_position?: number;
+    competing_assignments?: number;
+    response_deadline?: string;
+    optimization_version?: string;
+  };
+
+  @Column({ nullable: true })
+  expires_at: Date;
+
+  @Column({ nullable: true })
+  responded_at: Date;
+
+  @Column({ nullable: true })
+  started_at: Date;
+
+  @Column({ nullable: true })
+  completed_at: Date;
+
+  @Column({ length: 500, nullable: true })
+  decline_reason: string;
+
+  @Column({ length: 500, nullable: true })
+  cancellation_reason: string;
+
+  @CreateDateColumn()
+  created_at: Date;
+
+  @UpdateDateColumn()
+  updated_at: Date;
+
+  // Relations
+  @ManyToOne(() => Order, order => order.assignments)
+  @JoinColumn({ name: 'order_id' })
+  order: Order;
+
+  @ManyToOne(() => Courier, courier => courier.assignments)
+  @JoinColumn({ name: 'courier_id' })
+  courier: Courier;
+
+  // Virtual properties
+  get isActive(): boolean {
+    return [AssignmentStatus.ACCEPTED, AssignmentStatus.ACTIVE].includes(this.status);
+  }
+
+  get isPending(): boolean {
+    return this.status === AssignmentStatus.PROPOSED;
+  }
+
+  get isCompleted(): boolean {
+    return [
+      AssignmentStatus.COMPLETED,
+      AssignmentStatus.DECLINED,
+      AssignmentStatus.CANCELLED,
+      AssignmentStatus.EXPIRED,
+    ].includes(this.status);
+  }
+
+  get responseTimeMinutes(): number | null {
+    if (this.responded_at && this.created_at) {
+      return Math.floor((this.responded_at.getTime() - this.created_at.getTime()) / 60000);
+    }
+    return null;
+  }
+
+  get totalDurationMinutes(): number | null {
+    if (this.completed_at && this.started_at) {
+      return Math.floor((this.completed_at.getTime() - this.started_at.getTime()) / 60000);
+    }
+    return null;
+  }
+
+  get isExpired(): boolean {
+    return this.expires_at ? new Date() > this.expires_at : false;
+  }
+
+  get timeUntilExpiry(): number | null {
+    if (!this.expires_at) return null;
+    const now = new Date().getTime();
+    const expiry = this.expires_at.getTime();
+    return Math.max(0, expiry - now);
+  }
+
+  get wasAutoAssigned(): boolean {
+    return this.proposed_by === AssignmentSource.AUTO;
+  }
+
+  // Methods
+  accept(): void {
+    if (this.status !== AssignmentStatus.PROPOSED) {
+      throw new Error('Assignment can only be accepted when in PROPOSED status');
+    }
+    this.status = AssignmentStatus.ACCEPTED;
+    this.responded_at = new Date();
+  }
+
+  decline(reason?: string): void {
+    if (this.status !== AssignmentStatus.PROPOSED) {
+      throw new Error('Assignment can only be declined when in PROPOSED status');
+    }
+    this.status = AssignmentStatus.DECLINED;
+    this.responded_at = new Date();
+    if (reason) {
+      this.decline_reason = reason;
+    }
+  }
+
+  start(): void {
+    if (this.status !== AssignmentStatus.ACCEPTED) {
+      throw new Error('Assignment can only be started when ACCEPTED');
+    }
+    this.status = AssignmentStatus.ACTIVE;
+    this.started_at = new Date();
+  }
+
+  complete(): void {
+    if (this.status !== AssignmentStatus.ACTIVE) {
+      throw new Error('Assignment can only be completed when ACTIVE');
+    }
+    this.status = AssignmentStatus.COMPLETED;
+    this.completed_at = new Date();
+  }
+
+  cancel(reason?: string): void {
+    if (this.isCompleted) {
+      throw new Error('Cannot cancel completed assignment');
+    }
+    this.status = AssignmentStatus.CANCELLED;
+    this.completed_at = new Date();
+    if (reason) {
+      this.cancellation_reason = reason;
+    }
+  }
+
+  expire(): void {
+    if (this.status === AssignmentStatus.PROPOSED) {
+      this.status = AssignmentStatus.EXPIRED;
+      this.responded_at = new Date();
+    }
+  }
+}
