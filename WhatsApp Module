@@ -1,0 +1,28 @@
+import { Module } from '@nestjs/common';
+import { TypeOrmModule } from '@nestjs/typeorm';
+import { HttpModule } from '@nestjs/axios';
+import { BullModule } from '@nestjs/bull';
+
+import { WhatsappController } from './whatsapp.controller';
+import { WhatsappService } from './whatsapp.service';
+import { WhatsappMessageProcessor } from './whatsapp-message.processor';
+import { WebhookEvent } from '../../entities/webhook-event.entity';
+import { Order } from '../../entities/order.entity';
+import { OrdersModule } from '../orders/orders.module';
+import { GeocodingModule } from '../geocoding/geocoding.module';
+
+@Module({
+  imports: [
+    TypeOrmModule.forFeature([WebhookEvent, Order]),
+    HttpModule,
+    BullModule.registerQueue({
+      name: 'whatsapp-messages',
+    }),
+    OrdersModule,
+    GeocodingModule,
+  ],
+  controllers: [WhatsappController],
+  providers: [WhatsappService, WhatsappMessageProcessor],
+  exports: [WhatsappService],
+})
+export class WhatsappModule {}
