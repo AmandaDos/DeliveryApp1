@@ -1,0 +1,140 @@
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  OneToOne,
+  OneToMany,
+  JoinColumn,
+} from 'typeorm';
+import { Point } from 'geojson';
+import { User } from './user.entity';
+import { Assignment } from './assignment.entity';
+import { Route } from './route.entity';
+
+export enum VehicleType {
+  BICYCLE = 'bicycle',
+  MOTORCYCLE = 'motorcycle',
+  CAR = 'car',
+  VAN = 'van',
+  TRUCK = 'truck',
+}
+
+export enum CourierStatus {
+  OFFLINE = 'offline',
+  AVAILABLE = 'available',
+  ON_ROUTE = 'on_route',
+  BUSY = 'busy',
+}
+
+@Entity('couriers')
+export class Courier {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column('uuid')
+  user_id: string;
+
+  @Column({ type: 'enum', enum: VehicleType, default: VehicleType.BICYCLE })
+  vehicle_type: VehicleType;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 50 })
+  capacity_kg: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 100 })
+  capacity_volume_liters: number;
+
+  @Column({
+    type: 'geometry',
+    spatialFeatureType: 'Point',
+    srid: 4326,
+    nullable: true,
+  })
+  home_base_location: Point;
+
+  @Column({
+    type: 'geometry',
+    spatialFeatureType: 'Point',
+    srid: 4326,
+    nullable: true,
+  })
+  current_location: Point;
+
+  @Column({ type: 'enum', enum: CourierStatus, default: CourierStatus.OFFLINE })
+  current_status: CourierStatus;
+
+  @Column({ type: 'decimal', precision: 3, scale: 2, default: 4.5 })
+  rating: number;
+
+  @Column({ default: 0 })
+  completed_deliveries: number;
+
+  @Column({ default: 0 })
+  cancelled_deliveries: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  total_earnings: number;
+
+  @Column({ nullable: true })
+  last_seen_at: Date;
+
+  @Column({ nullable: true })
+  shift_started_at: Date;
+
+  @Column({ nullable: true })
+  shift_ended_at: Date;
+
+  @Column({ type: 'jsonb', nullable: true })
+  preferences: {
+    max_distance_km?: number;
+    preferred_areas?: string[];
+    working_hours?: {
+      start: string;
+      end: string;
+      days: string[];
+    };
+    auto_accept_orders?: boolean;
+  };
+
+  @CreateDateColumn()
+  created_at: Date;
+
+  @UpdateDateColumn()
+  updated_at: Date;
+
+  // Relations
+  @OneToOne(() => User, user => user.courier)
+  @JoinColumn({ name: 'user_id' })
+  user: User;
+
+  @OneToMany(() => Assignment, assignment => assignment.courier)
+  assignments: Assignment[];
+
+  @OneToMany(() => Route, route => route.courier)
+  routes: Route[];
+
+  // Virtual properties
+  get isOnline(): boolean {
+    return this.current_status !== CourierStatus.OFFLINE;
+  }
+
+  get isAvailable(): boolean {
+    return this.current_status === CourierStatus.AVAILABLE;
+  }
+
+  get isOnRoute(): boolean {
+    return this.current_status === CourierStatus.ON_ROUTE;
+  }
+
+  get successRate(): number {
+    const total = this.completed_deliveries + this.cancelled_deliveries;
+    return total > 0 ? (this.completed_deliveries / total) * 100 : 100;
+  }
+
+  get averageEarningsPerDelivery(): number {
+    return this.completed_deliveries > 0 
+      ? Number(this.total_earnings) / this.completed_deliveries 
+      : 0;
+  }
+}
