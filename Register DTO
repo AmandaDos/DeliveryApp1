@@ -1,0 +1,119 @@
+import { ApiProperty } from '@nestjs/swagger';
+import { IsEmail, IsString, IsPhoneNumber, MinLength, IsOptional, IsEnum } from 'class-validator';
+import { VehicleType } from '../../../entities/courier.entity';
+
+export class RegisterDto {
+  @ApiProperty({ 
+    description: 'Full name of the courier',
+    example: 'Juan Pérez',
+    minLength: 2,
+    maxLength: 100,
+  })
+  @IsString()
+  @MinLength(2, { message: 'Name must be at least 2 characters long' })
+  name: string;
+
+  @ApiProperty({ 
+    description: 'Email address',
+    example: 'juan.perez@email.com',
+  })
+  @IsEmail({}, { message: 'Please provide a valid email address' })
+  email: string;
+
+  @ApiProperty({ 
+    description: 'Phone number in international format',
+    example: '+52999123456',
+  })
+  @IsPhoneNumber('MX', { message: 'Please provide a valid Mexican phone number' })
+  phone: string;
+
+  @ApiProperty({ 
+    description: 'Password (minimum 8 characters)',
+    example: 'SecurePass123!',
+    minLength: 8,
+  })
+  @IsString()
+  @MinLength(8, { message: 'Password must be at least 8 characters long' })
+  password: string;
+
+  @ApiProperty({ 
+    description: 'Type of vehicle used for deliveries',
+    enum: VehicleType,
+    example: VehicleType.BICYCLE,
+    required: false,
+  })
+  @IsOptional()
+  @IsEnum(VehicleType, { message: 'Please select a valid vehicle type' })
+  vehicle_type?: VehicleType;
+}
+
+export class LoginDto {
+  @ApiProperty({ 
+    description: 'Email address',
+    example: 'juan.perez@email.com',
+  })
+  @IsEmail({}, { message: 'Please provide a valid email address' })
+  email: string;
+
+  @ApiProperty({ 
+    description: 'Password',
+    example: 'SecurePass123!',
+  })
+  @IsString()
+  @MinLength(1, { message: 'Password is required' })
+  password: string;
+}
+
+export class RefreshTokenDto {
+  @ApiProperty({ 
+    description: 'Refresh token',
+    example: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+  })
+  @IsString()
+  refresh_token: string;
+}
+
+export class ChangePasswordDto {
+  @ApiProperty({ 
+    description: 'Current password',
+    example: 'OldPassword123!',
+  })
+  @IsString()
+  current_password: string;
+
+  @ApiProperty({ 
+    description: 'New password (minimum 8 characters)',
+    example: 'NewSecurePass123!',
+    minLength: 8,
+  })
+  @IsString()
+  @MinLength(8, { message: 'New password must be at least 8 characters long' })
+  new_password: string;
+}
+
+export class RequestPasswordResetDto {
+  @ApiProperty({ 
+    description: 'Email address for password reset',
+    example: 'juan.perez@email.com',
+  })
+  @IsEmail({}, { message: 'Please provide a valid email address' })
+  email: string;
+}
+
+export class ResetPasswordDto {
+  @ApiProperty({ 
+    description: 'Password reset token',
+    example: 'reset_token_from_email',
+  })
+  @IsString()
+  token: string;
+
+  @ApiProperty({ 
+    description: 'New password (minimum 8 characters)',
+    example: 'NewSecurePass123!',
+    minLength: 8,
+  })
+  @IsString()
+  @MinLength(8, { message: 'New password must be at least 8 characters long' })
+  new_password: string;
+}
