@@ -1,0 +1,237 @@
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  ManyToOne,
+  OneToMany,
+  JoinColumn,
+} from 'typeorm';
+import { LineString } from 'geojson';
+import { Courier } from './courier.entity';
+import { RouteStop } from './route-stop.entity';
+
+export enum RouteStatus {
+  PLANNING = 'planning',
+  ACTIVE = 'active',
+  COMPLETED = 'completed',
+  CANCELLED = 'cancelled',
+}
+
+@Entity('routes')
+export class Route {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column('uuid')
+  courier_id: string;
+
+  @Column({ type: 'date' })
+  date: Date;
+
+  @Column({ type: 'enum', enum: RouteStatus, default: RouteStatus.PLANNING })
+  status: RouteStatus;
+
+  @Column({ type: 'decimal', precision: 10, scale: 3, default: 0 })
+  total_distance_km: number;
+
+  @Column({ default: 0 })
+  total_duration_minutes: number;
+
+  @Column({ default: 0 })
+  estimated_duration_minutes: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  total_earnings: number;
+
+  @Column({ default: 0 })
+  total_orders: number;
+
+  @Column({ default: 0 })
+  completed_orders: number;
+
+  @Column({
+    type: 'geometry',
+    spatialFeatureType: 'LineString',
+    srid: 4326,
+    nullable: true,
+  })
+  route_geometry: LineString;
+
+  @Column({ type: 'jsonb', nullable: true })
+  optimization_metadata: {
+    algorithm_version?: string;
+    optimization_time_ms?: number;
+    constraints_applied?: string[];
+    efficiency_score?: number;
+    total_stops?: number;
+    vehicle_capacity_used?: number;
+    time_windows_respected?: boolean;
+  };
+
+  @Column({ nullable: true })
+  started_at: Date;
+
+  @Column({ nullable: true })
+  completed_at: Date;
+
+  @Column({ nullable: true })
+  last_optimized_at: Date;
+
+  @Column({ default: 0 })
+  optimization_count: number;
+
+  @CreateDateColumn()
+  created_at: Date;
+
+  @UpdateDateColumn()
+  updated_at: Date;
+
+  // Relations
+  @ManyToOne(() => Courier, courier => courier.routes)
+  @JoinColumn({ name: 'courier_id' })
+  courier: Courier;
+
+  @OneToMany(() => RouteStop, routeStop => routeStop.route, { cascade: true })
+  stops: RouteStop[];
+
+  // Virtual properties
+  get isActive(): boolean {
+    return this.status === RouteStatus.ACTIVE;
+  }
+
+  get isCompleted(): boolean {
+    return this.status === RouteStatus.COMPLETED;
+  }
+
+  get completionRate(): number {
+    return this.total_orders > 0 ? (this.completed_orders / this.total_orders) * 100 : 0;
+  }
+
+  get averageEarningsPerOrder(): number {
+    return this.completed_orders > 0 
+      ? Number(this.total_earnings) / this.completed_orders 
+      : 0;
+  }
+
+  get efficiencyScore(): number {
+    if (!this.optimization_metadata?.efficiency_score) return 0;
+    return this.optimization_metadata.efficiency_score;
+  }
+
+  get currentStop(): RouteStop | null {
+    if (!this.stops) return null;
+    
+    return this.stops
+      .filter(stop => !stop.completed_at)
+      .sort((a, b) => a.sequence - b.sequence)[0] || null;
+  }
+
+  get nextStop(): RouteStop | null {
+    const current = this.currentStop;
+    if (!current || !this.stops) return null;
+
+    return this.stops
+      .filter(stop => stop.sequence > current.sequence && !stop.completed_at)
+      .sort((a, b) => a.sequence - b.sequence)[0] || null;
+  }
+
+  get remainingStops(): RouteStop[] {
+    if (!this.stops) return [];
+    
+    return this.stops
+      .filter(stop => !stop.completed_at)
+      .sort((a, b) => a.sequence - b.sequence);
+  }
+
+  get completedStops(): RouteStop[] {
+    if (!this.stops) return [];
+    
+    return this.stops
+      .filter(stop => stop.completed_at)
+      .sort((a, b) => a.sequence - b.sequence);
+  }
+
+  get estimatedCompletionTime(): Date | null {
+    const current = this.currentStop;
+    if (!current?.eta || !this.isActive) return null;
+
+    const remainingMinutes = this.stops
+      .filter(stop => stop.sequence >= current.sequence && !stop.completed_at)
+      .reduce((total, stop) => total + (stop.estimated_duration_minutes || 0), 0);
+
+    const completion = new Date();
+    completion.setMinutes(completion.getMinutes() + remainingMinutes);
+    return completion;
+  }
+
+  // Methods
+  start(): void {
+    if (this.status !== RouteStatus.PLANNING) {
+      throw new Error('Route can only be started when in PLANNING status');
+    }
+    this.status = RouteStatus.ACTIVE;
+    this.started_at = new Date();
+  }
+
+  complete(): void {
+    if (this.status !== RouteStatus.ACTIVE) {
+      throw new Error('Route can only be completed when ACTIVE');
+    }
+    this.status = RouteStatus.COMPLETED;
+    this.completed_at = new Date();
+    this.total_duration_minutes = this.calculateActualDuration();
+  }
+
+  cancel(): void {
+    if (this.isCompleted) {
+      throw new Error('Cannot cancel completed route');
+    }
+    this.status = RouteStatus.CANCELLED;
+    this.completed_at = new Date();
+  }
+
+  addStop(stop: Partial<RouteStop>): void {
+    // This would be handled by the service layer
+    // Just marking the route as needing re-optimization
+    this.last_optimized_at = null;
+  }
+
+  removeStop(stopId: string): void {
+    // This would be handled by the service layer
+    // Just marking the route as needing re-optimization
+    this.last_optimized_at = null;
+  }
+
+  needsOptimization(): boolean {
+    return !this.last_optimized_at || 
+           this.updated_at > this.last_optimized_at;
+  }
+
+  private calculateActualDuration(): number {
+    if (!this.started_at || !this.completed_at) return 0;
+    return Math.floor((this.completed_at.getTime() - this.started_at.getTime()) / 60000);
+  }
+
+  updateOptimizationMetadata(metadata: Route['optimization_metadata']): void {
+    this.optimization_metadata = {
+      ...this.optimization_metadata,
+      ...metadata,
+    };
+    this.last_optimized_at = new Date();
+    this.optimization_count += 1;
+  }
+
+  calculateStats(): void {
+    if (!this.stops) return;
+
+    this.total_orders = this.stops.filter(stop => stop.type === 'pickup').length;
+    this.completed_orders = this.stops.filter(
+      stop => stop.type === 'dropoff' && stop.completed_at
+    ).length;
+    
+    // Total earnings would be calculated from associated orders
+    // This would be handled by the service layer
+  }
+}
