@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgis/postgis:14-3.2
+    container_name: route_consolidator_db
+    environment:
+      POSTGRES_DB: route_consolidator
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init-db.sql
+    networks:
+      - route_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: route_consolidator_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - route_network
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: route_consolidator_api
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/route_consolidator
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=your-super-secret-jwt-key-change-in-production
+      - JWT_REFRESH_SECRET=your-refresh-secret-change-in-production
+      - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}
+      - WHATSAPP_TOKEN=${WHATSAPP_TOKEN}
+      - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN}
+      - PHONE_NUMBER_ID=${PHONE_NUMBER_ID}
+      - OPTIMIZER_SERVICE_URL=http://optimizer:8001
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./apps/api:/app
+      - /app/node_modules
+    networks:
+      - route_network
+    command: npm run start:dev
+
+  optimizer:
+    build:
+      context: services/optimizer
+      dockerfile: Dockerfile
+    container_name: route_consolidator_optimizer
+    ports:
+      - "8001:8001"
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}
+    depends_on:
+      - redis
+    networks:
+      - route_network
+
+  admin:
+    build:
+      context: apps/admin
+      dockerfile: Dockerfile
+    container_name: route_consolidator_admin
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
+      - NODE_ENV=development
+    depends_on:
+      - api
+    volumes:
+      - ./apps/admin:/app
+      - /app/node_modules
+    networks:
+      - route_network
+
+networks:
+  route_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
