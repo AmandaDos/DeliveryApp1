@@ -1,0 +1,205 @@
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  UpdateDateColumn,
+  OneToMany,
+  OneToOne,
+} from 'typeorm';
+import { Point } from 'geojson';
+import { Assignment } from './assignment.entity';
+import { RouteStop } from './route-stop.entity';
+
+export enum OrderSource {
+  WHATSAPP = 'whatsapp',
+  WEB = 'web',
+  API = 'api',
+  PHONE = 'phone',
+}
+
+export enum OrderStatus {
+  CREATED = 'created',
+  PUBLISHED = 'published',
+  ACCEPTED = 'accepted',
+  PICKED_UP = 'picked_up',
+  IN_TRANSIT = 'in_transit',
+  DELIVERED = 'delivered',
+  DECLINED = 'declined',
+  CANCELLED = 'cancelled',
+  FAILED = 'failed',
+}
+
+export enum OrderPriority {
+  LOW = 1,
+  NORMAL = 2,
+  HIGH = 3,
+  URGENT = 4,
+}
+
+@Entity('orders')
+export class Order {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Column({ length: 20, unique: true })
+  order_number: string;
+
+  @Column({ type: 'enum', enum: OrderSource, default: OrderSource.WHATSAPP })
+  source: OrderSource;
+
+  @Column({ type: 'text' })
+  pickup_address: string;
+
+  @Column({
+    type: 'geometry',
+    spatialFeatureType: 'Point',
+    srid: 4326,
+  })
+  pickup_location: Point;
+
+  @Column({ type: 'text' })
+  dropoff_address: string;
+
+  @Column({
+    type: 'geometry',
+    spatialFeatureType: 'Point',
+    srid: 4326,
+  })
+  dropoff_location: Point;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  fee: number;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, nullable: true })
+  cod_amount: number;
+
+  @Column({ type: 'text', nullable: true })
+  notes: string;
+
+  @Column({ type: 'enum', enum: OrderPriority, default: OrderPriority.NORMAL })
+  priority: OrderPriority;
+
+  @Column({ nullable: true })
+  pickup_window_start: Date;
+
+  @Column({ nullable: true })
+  pickup_window_end: Date;
+
+  @Column({ nullable: true })
+  dropoff_window_start: Date;
+
+  @Column({ nullable: true })
+  dropoff_window_end: Date;
+
+  @Column({ type: 'decimal', precision: 8, scale: 2, nullable: true })
+  weight_kg: number;
+
+  @Column({ type: 'decimal', precision: 8, scale: 2, nullable: true })
+  volume_liters: number;
+
+  @Column({ type: 'enum', enum: OrderStatus, default: OrderStatus.CREATED })
+  status: OrderStatus;
+
+  @Column({ length: 20, nullable: true })
+  customer_phone: string;
+
+  @Column({ length: 100, nullable: true })
+  customer_name: string;
+
+  @Column({ type: 'decimal', precision: 10, scale: 6, nullable: true })
+  estimated_distance_km: number;
+
+  @Column({ nullable: true })
+  estimated_duration_minutes: number;
+
+  @Column({ type: 'jsonb', nullable: true })
+  metadata: {
+    whatsapp_message_id?: string;
+    original_message?: string;
+    geocoding_confidence?: number;
+    special_instructions?: string[];
+    photos?: string[];
+    requires_id?: boolean;
+    fragile?: boolean;
+  };
+
+  @Column({ nullable: true })
+  published_at: Date;
+
+  @Column({ nullable: true })
+  accepted_at: Date;
+
+  @Column({ nullable: true })
+  picked_up_at: Date;
+
+  @Column({ nullable: true })
+  delivered_at: Date;
+
+  @Column({ nullable: true })
+  cancelled_at: Date;
+
+  @Column({ length: 500, nullable: true })
+  cancellation_reason: string;
+
+  @CreateDateColumn()
+  created_at: Date;
+
+  @UpdateDateColumn()
+  updated_at: Date;
+
+  // Relations
+  @OneToMany(() => Assignment, assignment => assignment.order)
+  assignments: Assignment[];
+
+  @OneToOne(() => RouteStop, routeStop => routeStop.pickup_order)
+  pickup_stop: RouteStop;
+
+  @OneToOne(() => RouteStop, routeStop => routeStop.dropoff_order)
+  dropoff_stop: RouteStop;
+
+  // Virtual properties
+  get isActive(): boolean {
+    return [
+      OrderStatus.PUBLISHED,
+      OrderStatus.ACCEPTED,
+      OrderStatus.PICKED_UP,
+      OrderStatus.IN_TRANSIT,
+    ].includes(this.status);
+  }
+
+  get isCompleted(): boolean {
+    return [
+      OrderStatus.DELIVERED,
+      OrderStatus.CANCELLED,
+      OrderStatus.FAILED,
+    ].includes(this.status);
+  }
+
+  get isPending(): boolean {
+    return this.status === OrderStatus.PUBLISHED;
+  }
+
+  get currentAssignment(): Assignment | undefined {
+    return this.assignments?.find(a => a.status === 'accepted' || a.status === 'active');
+  }
+
+  get totalDuration(): number | null {
+    if (this.delivered_at && this.accepted_at) {
+      return Math.floor((this.delivered_at.getTime() - this.accepted_at.getTime()) / 60000);
+    }
+    return null;
+  }
+
+  get isUrgent(): boolean {
+    return this.priority === OrderPriority.URGENT || this.priority === OrderPriority.HIGH;
+  }
+
+  get hasCOD(): boolean {
+    return this.cod_amount != null && this.cod_amount > 0;
+  }
+
+  get displayNumber(): string {
+    return `#${this.order_number}`;
+  }
+}
